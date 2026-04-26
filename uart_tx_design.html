@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UART Transmitter — Design Document</title>
+    <style>
+        :root {
+            --bg: #f8f9fa;
+            --card: #ffffff;
+            --accent: #2563eb;
+            --accent-light: #dbeafe;
+            --border: #e5e7eb;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --code-bg: #1e293b;
+            --code-fg: #e2e8f0;
+            --pass: #16a34a;
+            --fail: #dc2626;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem;
+        }
+        .container { max-width: 1100px; margin: 0 auto; }
+        h1 {
+            font-size: 2rem;
+            border-bottom: 3px solid var(--accent);
+            padding-bottom: .5rem;
+            margin-bottom: 1.5rem;
+        }
+        h2 {
+            font-size: 1.35rem;
+            color: var(--accent);
+            margin: 2rem 0 .75rem;
+            border-left: 4px solid var(--accent);
+            padding-left: .75rem;
+        }
+        h3 { font-size: 1.1rem; margin: 1.25rem 0 .5rem; }
+        p, li { margin-bottom: .5rem; }
+        ul { padding-left: 1.5rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+            font-size: .95rem;
+        }
+        th, td {
+            border: 1px solid var(--border);
+            padding: .5rem .75rem;
+            text-align: left;
+        }
+        th { background: var(--accent-light); font-weight: 600; }
+        tr:nth-child(even) { background: #f1f5f9; }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,.06);
+        }
+        pre {
+            background: var(--code-bg);
+            color: var(--code-fg);
+            border-radius: 6px;
+            padding: 1rem 1.25rem;
+            overflow-x: auto;
+            font-size: .85rem;
+            line-height: 1.5;
+            margin: 1rem 0;
+        }
+        code {
+            font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+        }
+        .inline-code {
+            background: #e2e8f0;
+            padding: .1rem .35rem;
+            border-radius: 3px;
+            font-size: .9em;
+        }
+        .badge {
+            display: inline-block;
+            font-size: .75rem;
+            font-weight: 600;
+            padding: .15rem .5rem;
+            border-radius: 12px;
+            text-transform: uppercase;
+        }
+        .badge-in  { background: #dcfce7; color: var(--pass); }
+        .badge-out { background: #fee2e2; color: var(--fail); }
+        .badge-param { background: #dbeafe; color: var(--accent); }
+        .diagram {
+            text-align: center;
+            margin: 1.5rem 0;
+        }
+        .diagram svg { max-width: 100%; }
+        .fsm-table td:first-child { font-weight: 600; }
+        .note {
+            background: #fffbeb;
+            border-left: 4px solid #f59e0b;
+            padding: .75rem 1rem;
+            border-radius: 4px;
+            margin: 1rem 0;
+            font-size: .93rem;
+        }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+            font-size: .85rem;
+            color: var(--muted);
+            text-align: center;
+        }
+        /* keyword highlighting */
+        .kw  { color: #c084fc; }
+        .typ { color: #67e8f9; }
+        .str { color: #86efac; }
+        .cmt { color: #94a3b8; font-style: italic; }
+        .num { color: #fbbf24; }
+    </style>
+</head>
+<body>
+<div class="container">
+
+<!-- ===================================================================== -->
+<h1>UART Transmitter — Design &amp; Verification Document</h1>
+
+<p>
+    This document describes a simple, configurable <strong>UART transmitter</strong>
+    (<code class="inline-code">uart_tx</code>) implemented in SystemVerilog, along with
+    a self-checking testbench (<code class="inline-code">uart_tx_tb</code>).
+</p>
+
+<!-- ===================================================================== -->
+<h2>1&ensp;Overview</h2>
+<div class="card">
+    <ul>
+        <li><strong>Protocol:</strong> Standard asynchronous UART — 1 start bit, 8 data bits (LSB first), 1 stop bit, no parity.</li>
+        <li><strong>Configurable baud rate:</strong> Set via two parameters (<code class="inline-code">CLK_FREQ</code>, <code class="inline-code">BAUD_RATE</code>). The module automatically computes the required clock divider.</li>
+        <li><strong>Interface:</strong> Simple valid/ready-style — pulse <code class="inline-code">tx_start</code> with data, monitor <code class="inline-code">tx_busy</code>/<code class="inline-code">tx_done</code>.</li>
+        <li><strong>Technology:</strong> Pure RTL, no vendor primitives. Synthesisable on any FPGA or ASIC target.</li>
+    </ul>
+</div>
+
+<!-- ===================================================================== -->
+<h2>2&ensp;Block Diagram</h2>
+<div class="card diagram">
+    <svg width="700" height="260" viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg">
+        <!-- Main block -->
+        <rect x="200" y="40" width="300" height="180" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+        <text x="350" y="75" text-anchor="middle" font-size="18" font-weight="bold" fill="#1e40af">uart_tx</text>
+
+        <!-- Internal labels -->
+        <text x="350" y="110" text-anchor="middle" font-size="12" fill="#6b7280">FSM + Baud Counter</text>
+        <text x="350" y="130" text-anchor="middle" font-size="12" fill="#6b7280">Shift Register</text>
+        <text x="350" y="150" text-anchor="middle" font-size="11" fill="#9ca3af">CLKS_PER_BIT = CLK_FREQ / BAUD_RATE</text>
+
+        <!-- Inputs (left) -->
+        <line x1="80" y1="90" x2="200" y2="90" stroke="#374151" stroke-width="2" marker-end="url(#arrow)"/>
+        <text x="75" y="94" text-anchor="end" font-size="13" fill="#374151">clk</text>
+
+        <line x1="80" y1="120" x2="200" y2="120" stroke="#374151" stroke-width="2" marker-end="url(#arrow)"/>
+        <text x="75" y="124" text-anchor="end" font-size="13" fill="#374151">rst_n</text>
+
+        <line x1="80" y1="160" x2="200" y2="160" stroke="#374151" stroke-width="2" marker-end="url(#arrow)"/>
+        <text x="75" y="164" text-anchor="end" font-size="13" fill="#374151">tx_data[7:0]</text>
+
+        <line x1="80" y1="190" x2="200" y2="190" stroke="#374151" stroke-width="2" marker-end="url(#arrow)"/>
+        <text x="75" y="194" text-anchor="end" font-size="13" fill="#374151">tx_start</text>
+
+        <!-- Outputs (right) -->
+        <line x1="500" y1="100" x2="620" y2="100" stroke="#dc2626" stroke-width="2" marker-end="url(#arrowR)"/>
+        <text x="625" y="104" font-size="13" font-weight="bold" fill="#dc2626">tx_out</text>
+
+        <line x1="500" y1="150" x2="620" y2="150" stroke="#374151" stroke-width="2" marker-end="url(#arrowR)"/>
+        <text x="625" y="154" font-size="13" fill="#374151">tx_busy</text>
+
+        <line x1="500" y1="190" x2="620" y2="190" stroke="#374151" stroke-width="2" marker-end="url(#arrowR)"/>
+        <text x="625" y="194" font-size="13" fill="#374151">tx_done</text>
+
+        <!-- Arrow markers -->
+        <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="#374151"/>
+            </marker>
+            <marker id="arrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="#374151"/>
+            </marker>
+        </defs>
+    </svg>
+</div>
+
+<!-- ===================================================================== -->
+<h2>3&ensp;Port Description</h2>
+<table>
+    <thead>
+        <tr><th>Port</th><th>Dir</th><th>Width</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>clk</code></td><td><span class="badge badge-in">IN</span></td><td>1</td><td>System clock.</td></tr>
+        <tr><td><code>rst_n</code></td><td><span class="badge badge-in">IN</span></td><td>1</td><td>Active-low asynchronous reset.</td></tr>
+        <tr><td><code>tx_data</code></td><td><span class="badge badge-in">IN</span></td><td>8</td><td>Parallel data byte to transmit.</td></tr>
+        <tr><td><code>tx_start</code></td><td><span class="badge badge-in">IN</span></td><td>1</td><td>Assert for one clock to begin TX. Ignored while <code>tx_busy</code>.</td></tr>
+        <tr><td><code>tx_out</code></td><td><span class="badge badge-out">OUT</span></td><td>1</td><td>Serial data output (idle = high).</td></tr>
+        <tr><td><code>tx_busy</code></td><td><span class="badge badge-out">OUT</span></td><td>1</td><td>High during transmission.</td></tr>
+        <tr><td><code>tx_done</code></td><td><span class="badge badge-out">OUT</span></td><td>1</td><td>Pulsed high for one clock when frame completes.</td></tr>
+    </tbody>
+</table>
+
+<!-- ===================================================================== -->
+<h2>4&ensp;Parameters</h2>
+<table>
+    <thead>
+        <tr><th>Parameter</th><th>Default</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>CLK_FREQ</code></td><td><span class="badge badge-param">50 000 000</span></td><td>Input clock frequency in Hz.</td></tr>
+        <tr><td><code>BAUD_RATE</code></td><td><span class="badge badge-param">115 200</span></td><td>Target baud rate in bps.</td></tr>
+    </tbody>
+</table>
+<p>
+    The internal divider is computed as:
+    <code class="inline-code">CLKS_PER_BIT = CLK_FREQ / BAUD_RATE</code>.
+    Ensure the clock frequency is an integer multiple of the baud rate for zero-error timing.
+</p>
+
+<!-- ===================================================================== -->
+<h2>5&ensp;FSM Description</h2>
+<div class="card">
+    <table class="fsm-table">
+        <thead>
+            <tr><th>State</th><th>Encoding</th><th>Behaviour</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>S_IDLE</td><td>3'b000</td><td>Line held high. Waits for <code>tx_start</code>. Latches <code>tx_data</code> into shift register.</td></tr>
+            <tr><td>S_START</td><td>3'b001</td><td>Drives <code>tx_out</code> low for one bit period (start bit).</td></tr>
+            <tr><td>S_DATA</td><td>3'b010</td><td>Shifts out 8 data bits LSB-first, one bit period each.</td></tr>
+            <tr><td>S_STOP</td><td>3'b011</td><td>Drives <code>tx_out</code> high for one bit period (stop bit).</td></tr>
+            <tr><td>S_DONE</td><td>3'b100</td><td>Asserts <code>tx_done</code> for one clock, then returns to S_IDLE.</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<div class="card diagram">
+    <h3>State Transition Diagram</h3>
+    <svg width="660" height="120" viewBox="0 0 660 120" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <marker id="a2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                <polygon points="0 0,8 3,0 6" fill="#2563eb"/>
+            </marker>
+        </defs>
+        <!-- States -->
+        <rect x="10" y="35" width="90" height="40" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+        <text x="55" y="60" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e40af">S_IDLE</text>
+
+        <rect x="150" y="35" width="90" height="40" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+        <text x="195" y="60" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e40af">S_START</text>
+
+        <rect x="290" y="35" width="90" height="40" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+        <text x="335" y="60" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e40af">S_DATA</text>
+
+        <rect x="430" y="35" width="90" height="40" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+        <text x="475" y="60" text-anchor="middle" font-size="13" font-weight="bold" fill="#1e40af">S_STOP</text>
+
+        <rect x="570" y="35" width="80" height="40" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+        <text x="610" y="60" text-anchor="middle" font-size="13" font-weight="bold" fill="#166534">S_DONE</text>
+
+        <!-- Arrows -->
+        <line x1="100" y1="55" x2="148" y2="55" stroke="#2563eb" stroke-width="2" marker-end="url(#a2)"/>
+        <text x="124" y="48" text-anchor="middle" font-size="9" fill="#6b7280">tx_start</text>
+
+        <line x1="240" y1="55" x2="288" y2="55" stroke="#2563eb" stroke-width="2" marker-end="url(#a2)"/>
+        <text x="264" y="48" text-anchor="middle" font-size="9" fill="#6b7280">bit done</text>
+
+        <line x1="380" y1="55" x2="428" y2="55" stroke="#2563eb" stroke-width="2" marker-end="url(#a2)"/>
+        <text x="404" y="48" text-anchor="middle" font-size="9" fill="#6b7280">bit[7]</text>
+
+        <line x1="520" y1="55" x2="568" y2="55" stroke="#2563eb" stroke-width="2" marker-end="url(#a2)"/>
+        <text x="544" y="48" text-anchor="middle" font-size="9" fill="#6b7280">bit done</text>
+
+        <!-- Loop back from DONE to IDLE -->
+        <path d="M610,75 L610,105 L55,105 L55,77" fill="none" stroke="#16a34a" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#a2)"/>
+        <text x="330" y="100" text-anchor="middle" font-size="9" fill="#6b7280">auto</text>
+
+        <!-- Self-loop on S_DATA -->
+        <path d="M335,35 C335,10 365,10 365,35" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#a2)"/>
+        <text x="350" y="9" text-anchor="middle" font-size="8" fill="#6b7280">next bit</text>
+    </svg>
+</div>
+
+<!-- ===================================================================== -->
+<h2>6&ensp;UART Frame Format</h2>
+<div class="card">
+    <pre><code>        Idle   Start    D0    D1    D2    D3    D4    D5    D6    D7   Stop   Idle
+tx_out: ‾‾‾‾‾‾\_____/‾‾‾‾‾/‾‾‾‾‾/‾‾‾‾‾/‾‾‾‾‾/‾‾‾‾‾/‾‾‾‾‾/‾‾‾‾‾/‾‾‾‾‾/‾‾‾‾‾‾/‾‾‾‾‾‾
+                ← 1 bit →  ← 1 bit →  …                                  ← 1 bit →
+
+        • Idle   = HIGH
+        • Start  = LOW  (1 bit period)
+        • D[0:7] = LSB first (each 1 bit period)
+        • Stop   = HIGH (1 bit period)
+        • Bit period = CLKS_PER_BIT × clock period</code></pre>
+</div>
+
+<!-- ===================================================================== -->
+<h2>7&ensp;Design Source Code</h2>
+<div class="card">
+    <h3>File: <code>rtl/uart_tx.sv</code></h3>
+    <pre><code><span class="cmt">// UART Transmitter — configurable baud rate</span>
+<span class="kw">module</span> <span class="typ">uart_tx</span> #(
+    <span class="kw">parameter</span> CLK_FREQ  = <span class="num">50_000_000</span>,
+    <span class="kw">parameter</span> BAUD_RATE = <span class="num">115_200</span>
+)(
+    <span class="kw">input</span>  <span class="typ">logic</span>       clk,
+    <span class="kw">input</span>  <span class="typ">logic</span>       rst_n,
+    <span class="kw">input</span>  <span class="typ">logic</span> [7:0] tx_data,
+    <span class="kw">input</span>  <span class="typ">logic</span>       tx_start,
+    <span class="kw">output</span> <span class="typ">logic</span>       tx_out,
+    <span class="kw">output</span> <span class="typ">logic</span>       tx_busy,
+    <span class="kw">output</span> <span class="typ">logic</span>       tx_done
+);
+
+    <span class="kw">localparam integer</span> CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
+
+    <span class="kw">typedef enum logic</span> [2:0] {
+        S_IDLE  = <span class="num">3'b000</span>,
+        S_START = <span class="num">3'b001</span>,
+        S_DATA  = <span class="num">3'b010</span>,
+        S_STOP  = <span class="num">3'b011</span>,
+        S_DONE  = <span class="num">3'b100</span>
+    } state_t;
+
+    state_t              state;
+    <span class="typ">logic</span> [$clog2(CLKS_PER_BIT)-1:0] baud_cnt;
+    <span class="typ">logic</span> [2:0]          bit_idx;
+    <span class="typ">logic</span> [7:0]          tx_shift;
+
+    <span class="kw">always_ff</span> @(<span class="kw">posedge</span> clk <span class="kw">or negedge</span> rst_n) <span class="kw">begin</span>
+        <span class="kw">if</span> (!rst_n) <span class="kw">begin</span>
+            state    &lt;= S_IDLE;
+            tx_out   &lt;= <span class="num">1'b1</span>;
+            tx_busy  &lt;= <span class="num">1'b0</span>;
+            tx_done  &lt;= <span class="num">1'b0</span>;
+            baud_cnt &lt;= <span class="num">'0</span>;
+            bit_idx  &lt;= <span class="num">'0</span>;
+            tx_shift &lt;= <span class="num">'0</span>;
+        <span class="kw">end else begin</span>
+            tx_done &lt;= <span class="num">1'b0</span>;
+
+            <span class="kw">case</span> (state)
+                S_IDLE: <span class="kw">begin</span>
+                    tx_out  &lt;= <span class="num">1'b1</span>;
+                    tx_busy &lt;= <span class="num">1'b0</span>;
+                    <span class="kw">if</span> (tx_start) <span class="kw">begin</span>
+                        tx_shift &lt;= tx_data;
+                        tx_busy  &lt;= <span class="num">1'b1</span>;
+                        state    &lt;= S_START;
+                        baud_cnt &lt;= <span class="num">'0</span>;
+                    <span class="kw">end</span>
+                <span class="kw">end</span>
+
+                S_START: <span class="kw">begin</span>
+                    tx_out &lt;= <span class="num">1'b0</span>;
+                    <span class="kw">if</span> (baud_cnt == CLKS_PER_BIT - 1) <span class="kw">begin</span>
+                        baud_cnt &lt;= <span class="num">'0</span>;
+                        bit_idx  &lt;= <span class="num">'0</span>;
+                        state    &lt;= S_DATA;
+                    <span class="kw">end else</span>
+                        baud_cnt &lt;= baud_cnt + 1;
+                <span class="kw">end</span>
+
+                S_DATA: <span class="kw">begin</span>
+                    tx_out &lt;= tx_shift[bit_idx];
+                    <span class="kw">if</span> (baud_cnt == CLKS_PER_BIT - 1) <span class="kw">begin</span>
+                        baud_cnt &lt;= <span class="num">'0</span>;
+                        <span class="kw">if</span> (bit_idx == <span class="num">3'd7</span>)
+                            state &lt;= S_STOP;
+                        <span class="kw">else</span>
+                            bit_idx &lt;= bit_idx + 1;
+                    <span class="kw">end else</span>
+                        baud_cnt &lt;= baud_cnt + 1;
+                <span class="kw">end</span>
+
+                S_STOP: <span class="kw">begin</span>
+                    tx_out &lt;= <span class="num">1'b1</span>;
+                    <span class="kw">if</span> (baud_cnt == CLKS_PER_BIT - 1) <span class="kw">begin</span>
+                        baud_cnt &lt;= <span class="num">'0</span>;
+                        state    &lt;= S_DONE;
+                    <span class="kw">end else</span>
+                        baud_cnt &lt;= baud_cnt + 1;
+                <span class="kw">end</span>
+
+                S_DONE: <span class="kw">begin</span>
+                    tx_done &lt;= <span class="num">1'b1</span>;
+                    tx_busy &lt;= <span class="num">1'b0</span>;
+                    state   &lt;= S_IDLE;
+                <span class="kw">end</span>
+
+                <span class="kw">default</span>: state &lt;= S_IDLE;
+            <span class="kw">endcase</span>
+        <span class="kw">end</span>
+    <span class="kw">end</span>
+
+<span class="kw">endmodule</span></code></pre>
+</div>
+
+<!-- ===================================================================== -->
+<h2>8&ensp;Testbench</h2>
+<div class="card">
+    <h3>Verification Strategy</h3>
+    <ul>
+        <li><strong>Self-checking:</strong> Each transmitted frame is captured by sampling <code class="inline-code">tx_out</code> at the midpoint of each bit period, then compared against the expected {stop, data, start} pattern.</li>
+        <li><strong>Test 1 — Idle Check:</strong> Verifies <code class="inline-code">tx_out</code> is high and <code class="inline-code">tx_busy</code> is low after reset.</li>
+        <li><strong>Test 2 — Known Patterns:</strong> Sends 0x00, 0xFF, 0xA5, 0x5A, 0x0F, 0xF0, 0x55, 0xAA — covering all-zeros, all-ones, alternating, and boundary patterns.</li>
+        <li><strong>Test 3 — Random Data:</strong> 16 random bytes via <code class="inline-code">$urandom</code>.</li>
+        <li><strong>Test 4 — Back-to-back:</strong> 4 consecutive transmissions with no idle gap to stress the FSM re-entry path.</li>
+        <li><strong>Timeout watchdog:</strong> Kills simulation if it hangs.</li>
+    </ul>
+
+    <h3>File: <code>tb/uart_tx_tb.sv</code></h3>
+    <pre><code><span class="cmt">// Self-checking testbench (abbreviated key sections)</span>
+
+<span class="kw">module</span> <span class="typ">uart_tx_tb</span>;
+
+    <span class="kw">localparam</span> CLK_FREQ     = <span class="num">50_000_000</span>;
+    <span class="kw">localparam</span> BAUD_RATE    = <span class="num">5_000_000</span>;  <span class="cmt">// fast for sim</span>
+    <span class="kw">localparam</span> CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
+    <span class="kw">localparam</span> CLK_PERIOD   = <span class="num">20</span>;         <span class="cmt">// 50 MHz</span>
+
+    <span class="cmt">// DUT instantiation with above parameters …</span>
+    uart_tx #(.CLK_FREQ(CLK_FREQ), .BAUD_RATE(BAUD_RATE)) dut (.*);
+
+    <span class="cmt">// --- send_and_check task ---</span>
+    <span class="cmt">//  1. Pulse tx_start with data</span>
+    <span class="cmt">//  2. Sample tx_out at midpoint of each of 10 bit periods</span>
+    <span class="cmt">//  3. Compare captured frame vs expected {stop, data, start}</span>
+
+    <span class="cmt">// --- Stimulus ---</span>
+    <span class="cmt">//  Test 1: idle check</span>
+    <span class="cmt">//  Test 2: known bytes (0x00, 0xFF, 0xA5, …)</span>
+    <span class="cmt">//  Test 3: 16 random bytes</span>
+    <span class="cmt">//  Test 4: back-to-back ('0','1','2','3')</span>
+
+<span class="kw">endmodule</span></code></pre>
+</div>
+
+<!-- ===================================================================== -->
+<h2>9&ensp;How to Run</h2>
+<div class="card">
+    <h3>Using Icarus Verilog (open-source)</h3>
+    <pre><code>iverilog -g2012 -o uart_tx_tb.vvp rtl/uart_tx.sv tb/uart_tx_tb.sv
+vvp uart_tx_tb.vvp
+gtkwave uart_tx_tb.vcd   <span class="cmt"># optional: view waveforms</span></code></pre>
+
+    <h3>Using VCS</h3>
+    <pre><code>vcs -sverilog -full64 -debug_access+all rtl/uart_tx.sv tb/uart_tx_tb.sv -o simv
+./simv</code></pre>
+
+    <h3>Using Xcelium</h3>
+    <pre><code>xrun -sv rtl/uart_tx.sv tb/uart_tx_tb.sv -access +rwc</code></pre>
+
+    <div class="note">
+        <strong>Note:</strong> The testbench uses a fast baud rate (5 Mbaud) to keep simulation
+        time short. For synthesis, use realistic values such as 9600, 115200, etc.
+    </div>
+</div>
+
+<!-- ===================================================================== -->
+<h2>10&ensp;Typical Baud Rate Configurations</h2>
+<table>
+    <thead>
+        <tr><th>CLK_FREQ (MHz)</th><th>BAUD_RATE</th><th>CLKS_PER_BIT</th><th>Bit Period</th></tr>
+    </thead>
+    <tbody>
+        <tr><td>50</td><td>9 600</td><td>5 208</td><td>104.17 &micro;s</td></tr>
+        <tr><td>50</td><td>115 200</td><td>434</td><td>8.68 &micro;s</td></tr>
+        <tr><td>100</td><td>115 200</td><td>868</td><td>8.68 &micro;s</td></tr>
+        <tr><td>50</td><td>921 600</td><td>54</td><td>1.09 &micro;s</td></tr>
+        <tr><td>50</td><td>5 000 000</td><td>10</td><td>200 ns</td></tr>
+    </tbody>
+</table>
+
+<!-- ===================================================================== -->
+<h2>11&ensp;Design Considerations</h2>
+<div class="card">
+    <ul>
+        <li><strong>Baud rate accuracy:</strong> Integer division means some baud rates will have rounding error. For 50 MHz / 115200 = 434.03 → 434 (0.007% error, well within UART tolerance of ±2%).</li>
+        <li><strong>Asynchronous reset:</strong> Used for compatibility with FPGA global reset networks. Can be changed to synchronous reset by removing <code class="inline-code">or negedge rst_n</code> from the sensitivity list.</li>
+        <li><strong>No parity:</strong> The most common configuration (8N1). Parity can be added by inserting an extra state between S_DATA and S_STOP.</li>
+        <li><strong>Resource usage:</strong> ~25 FFs, ~40 LUTs on a typical FPGA — negligible.</li>
+    </ul>
+</div>
+
+<!-- ===================================================================== -->
+<footer>
+    UART Transmitter Design Document &mdash; Generated April 2026
+</footer>
+
+</div>
+</body>
+</html>
